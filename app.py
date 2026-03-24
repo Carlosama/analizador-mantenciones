@@ -156,37 +156,72 @@ def tabla_recurrencias_mensuales(df: pd.DataFrame, col_tag: str, col_fecha: str)
     return tabla.sort_values(["AñoMes", "CantidadMantenciones", col_tag], ascending=[True, False, True])
 
 
-def resumen_recurrencias_por_mes(tabla_rec: pd.DataFrame, col_tag_nombre: str) -> pd.DataFrame:
-    if tabla_rec.empty:
-        return pd.DataFrame(columns=["Mes", "MesN", f"{col_tag_nombre} únicos", "2 veces", "3 veces", "4 o más", "Total registros"])
-
-    base = tabla_rec.copy()
-    resumen = (
-        base.groupby(["MesN", "Mes"], as_index=False)
+def tabla_recurrencias_periodo(df: pd.DataFrame, col_tag: str, col_fecha: str) -> pd.DataFrame:
+    tabla = (
+        df.groupby(col_tag, as_index=False)
         .agg(
-            TAG_unicos=(base.columns[0], "size"),
-            Total_registros=("CantidadMantenciones", "sum"),
+            CantidadMantenciones=(col_tag, "size"),
+            PrimeraFecha=(col_fecha, "min"),
+            UltimaFecha=(col_fecha, "max")
+        )
+    )
+
+    tabla["Recurrencia"] = np.select(
+        [
+            tabla["CantidadMantenciones"] == 1,
+            tabla["CantidadMantenciones"] == 2,
+            tabla["CantidadMantenciones"] == 3,
+            tabla["CantidadMantenciones"] >= 4,
+        ],
+        ["1 vez", "2 veces", "3 veces", "4 o más"],
+        default="Sin clasificar",
+    )
+
+    tabla["DiasEntrePrimeraYUltima"] = (
+        tabla["UltimaFecha"] - tabla["PrimeraFecha"]
+    ).dt.days
+
+    return tabla.sort_values(
+        ["CantidadMantenciones", "UltimaFecha", col_tag],
+        ascending=[False, False, True]
+    )
+
+
+def resumen_recurrencias_por_mes(tabla_rec: pd.DataFrame) -> pd.DataFrame:
+    if tabla_rec.empty:
+        return pd.DataFrame(columns=["Mes", "MesN", "TAG-Mes", "2 veces", "3 veces", "4 o más", "Total eventos"])
+
+    resumen = (
+        tabla_rec.groupby(["MesN", "Mes"], as_index=False)
+        .agg(
+            TAG_Mes=("CantidadMantenciones", "size"),
+            Total_eventos=("CantidadMantenciones", "sum"),
             Rec_2=("CantidadMantenciones", lambda s: int((s == 2).sum())),
             Rec_3=("CantidadMantenciones", lambda s: int((s == 3).sum())),
             Rec_4mas=("CantidadMantenciones", lambda s: int((s >= 4).sum())),
         )
     )
+
     resumen = resumen.rename(columns={
-        "TAG_unicos": f"{col_tag_nombre} únicos",
-        "Total_registros": "Total registros",
+        "TAG_Mes": "TAG-Mes",
+        "Total_eventos": "Total eventos",
         "Rec_2": "2 veces",
         "Rec_3": "3 veces",
         "Rec_4mas": "4 o más",
     })
-    resumen["OrdenOperacional"] = resumen["MesN"].map({m: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
+
+    resumen["OrdenOperacional"] = resumen["MesN"].map(
+        {m: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)}
+    )
+
     return resumen.sort_values("OrdenOperacional").drop(columns="OrdenOperacional")
 
 
 def resumen_recurrencias_por_categoria(tabla_rec: pd.DataFrame) -> pd.DataFrame:
     if tabla_rec.empty:
-        return pd.DataFrame(columns=["Recurrencia", "Total TAG-Mes"])
+        return pd.DataFrame(columns=["Recurrencia", "Total TAG"])
     orden = ["1 vez", "2 veces", "3 veces", "4 o más"]
-    resumen = tabla_rec.groupby("Recurrencia", as_index=False).agg(**{"Total TAG-Mes": ("Recurrencia", "size")})
+    resumen = tabla_rec.groupby("Recurrencia", as_index=False).agg(**{"Total TAG": ("Recurrencia", "size")})
     resumen["Orden"] = resumen["Recurrencia"].map({v: i for i, v in enumerate(orden)})
     return resumen.sort_values("Orden").drop(columns="Orden")
 
@@ -316,7 +351,26 @@ def seleccionar_columnas_seguras(df: pd.DataFrame, columnas_deseadas: list[str])
     return df[columnas_unicas].copy()
 
 
-def grafico_barras(df_plot: pd.DataFrame, x: str, y: str, titulo: str, text_auto=True):
+def obtener_orden_meses_presentes(df: pd.DataFrame, col_mes_num="MesN") -> list[str]:
+    if df.empty or col_mes_num not in df.columns:
+        return [MAPA_MESES[m] for m in ORDEN_MESES_OPERACIONALES]
+
+    meses_presentes = sorted(
+        df[col_mes_num].dropna().astype(int).unique().tolist(),
+        key=lambda x: ORDEN_MESES_OPERACIONALES.index(x) if x in ORDEN_MESES_OPERACIONALES else 999
+    )
+    return [MAPA_MESES[m] for m in meses_presentes if m in MAPA_MESES]
+
+
+def aplicar_orden_meses(fig, orden_meses: list[str]):
+    fig.update_xaxes(
+        categoryorder="array",
+        categoryarray=orden_meses
+    )
+    return fig
+
+
+def grafico_barras(df_plot: pd.DataFrame, x: str, y: str, titulo: str, text_auto=True, orden_meses=None):
     fig = px.bar(df_plot, x=x, y=y, text_auto=text_auto, title=titulo)
     fig.update_layout(
         height=500,
@@ -326,10 +380,14 @@ def grafico_barras(df_plot: pd.DataFrame, x: str, y: str, titulo: str, text_auto
     )
     fig.update_xaxes(tickangle=-25, automargin=True)
     fig.update_yaxes(automargin=True)
+
+    if orden_meses:
+        fig = aplicar_orden_meses(fig, orden_meses)
+
     return fig
 
 
-def grafico_barras_agrupadas(df_plot: pd.DataFrame, x: str, ys: list[str], titulo: str):
+def grafico_barras_agrupadas(df_plot: pd.DataFrame, x: str, ys: list[str], titulo: str, orden_meses=None):
     largo = df_plot.melt(id_vars=[x], value_vars=ys, var_name="Serie", value_name="Valor")
     fig = px.bar(
         largo,
@@ -349,6 +407,10 @@ def grafico_barras_agrupadas(df_plot: pd.DataFrame, x: str, ys: list[str], titul
     )
     fig.update_xaxes(tickangle=-25, automargin=True)
     fig.update_yaxes(automargin=True)
+
+    if orden_meses:
+        fig = aplicar_orden_meses(fig, orden_meses)
+
     return fig
 
 
@@ -367,7 +429,7 @@ def descargar_excel(df_dict: dict[str, pd.DataFrame]) -> bytes:
 st.title("📊 Analizador Web de Mantenciones por FinalTAG")
 st.caption(
     "Análisis usando la columna Fecha_Ingreso, período operacional abril-marzo, "
-    "recurrencias, descartes configurables y seguimiento post mantenimiento mayor."
+    "recurrencias mensuales, recurrencia histórica del período, descartes configurables y seguimiento post mantenimiento mayor."
 )
 
 st.subheader("1) Carga de archivo")
@@ -456,14 +518,26 @@ if solo_mayores:
 validos_base, descartados, nombre_flag = calcular_descartes_por_umbral(filtrado, col_fecha, col_tag, umbral_dias)
 validos = validos_base.copy() if excluir_menor_umbral else filtrado.copy()
 
-recurrencias = tabla_recurrencias_mensuales(validos, col_tag, col_fecha)
+# Recurrencia mensual: mismo FinalTAG dentro del mismo mes
+recurrencias_mensuales = tabla_recurrencias_mensuales(validos, col_tag, col_fecha)
 if filtro_recurrencia:
-    recurrencias = recurrencias[recurrencias["Recurrencia"].isin(filtro_recurrencia)].copy()
+    recurrencias_mensuales = recurrencias_mensuales[
+        recurrencias_mensuales["Recurrencia"].isin(filtro_recurrencia)
+    ].copy()
 
-resumen_mes = resumen_recurrencias_por_mes(recurrencias, "TAG")
-resumen_categoria = resumen_recurrencias_por_categoria(recurrencias)
+# Recurrencia del período: mismo FinalTAG en todo el período
+recurrencias_periodo = tabla_recurrencias_periodo(validos, col_tag, col_fecha)
+if filtro_recurrencia:
+    recurrencias_periodo = recurrencias_periodo[
+        recurrencias_periodo["Recurrencia"].isin(filtro_recurrencia)
+    ].copy()
+
+resumen_mes = resumen_recurrencias_por_mes(recurrencias_mensuales)
+resumen_categoria = resumen_recurrencias_por_categoria(recurrencias_periodo)
 post_mayor = analizar_historial_post_mayor(validos, col_tag, col_fecha, col_tipo)
 tabla_mayores = tabla_mayores_periodo(validos, col_tag, col_fecha, col_tipo)
+
+orden_meses_graf = obtener_orden_meses_presentes(validos)
 
 # ============================================================
 # KPIS
@@ -479,8 +553,8 @@ k6.metric("TAG con mayor histórico", f"{len(post_mayor):,}".replace(",", "."))
 
 st.info(
     f"La lógica de fechas usada en esta app es operacional: si eliges 2026, se analiza desde abril 2025 hasta marzo 2026. "
-    f"Además, el seguimiento de mantenimiento mayor revisa si un FinalTAG que tuvo un mayor vuelve a ingresar después, "
-    f"incluyendo reingresos como menor. La regla mínima actual es > {umbral_dias} días."
+    f"Las recurrencias mensuales cuentan repeticiones dentro del mismo mes, mientras que la clasificación general de recurrencia "
+    f"considera el histórico completo del período filtrado. La regla mínima actual es > {umbral_dias} días."
 )
 
 # ============================================================
@@ -497,7 +571,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 
 with tab1:
     st.markdown("### Meses con más recurrencia")
-    st.caption("Aquí se muestra qué mes del período operacional tuvo más repeticiones de TAG, no solo cuántas veces se repitió cada categoría.")
+    st.caption("Aquí se muestra qué mes del período operacional tuvo más actividad recurrente considerando TAG repetidos dentro del mismo mes.")
 
     if resumen_mes.empty:
         st.info("No hay datos para el período seleccionado.")
@@ -505,17 +579,18 @@ with tab1:
         graf_mes = grafico_barras_agrupadas(
             resumen_mes,
             x="Mes",
-            ys=["Total registros", "2 veces", "3 veces", "4 o más"],
-            titulo="Resumen mensual de recurrencias por mes del período operacional"
+            ys=["Total eventos", "2 veces", "3 veces", "4 o más"],
+            titulo="Resumen mensual de recurrencias por mes del período operacional",
+            orden_meses=orden_meses_graf
         )
         st.plotly_chart(graf_mes, use_container_width=True)
 
-        top_mes = resumen_mes.sort_values(["4 o más", "3 veces", "2 veces", "Total registros"], ascending=False).head(1)
+        top_mes = resumen_mes.sort_values(["4 o más", "3 veces", "2 veces", "Total eventos"], ascending=False).head(1)
         if not top_mes.empty:
             fila = top_mes.iloc[0]
             st.success(
                 f"El mes con mayor concentración de recurrencias del período fue **{fila['Mes']}**, "
-                f"con {int(fila['Total registros'])} registros analizados, "
+                f"con {int(fila['Total eventos'])} eventos analizados, "
                 f"{int(fila['2 veces'])} TAG con recurrencia 2, "
                 f"{int(fila['3 veces'])} TAG con recurrencia 3 y "
                 f"{int(fila['4 o más'])} TAG con recurrencia 4 o más."
@@ -526,8 +601,8 @@ with tab1:
 with tab2:
     st.markdown("### Recurrencias por FinalTAG")
     st.caption(
-        "'1 vez', '2 veces', '3 veces' y '4 o más' significan cuántas veces se repitió el mismo "
-        "FinalTAG dentro del mismo mes calendario, calculado desde la columna de fecha seleccionada."
+        "A la izquierda se muestra la clasificación general del período completo. "
+        "A la derecha, los meses con más TAG repetidos dentro del mismo mes."
     )
 
     c21, c22 = st.columns(2)
@@ -539,32 +614,35 @@ with tab2:
                 grafico_barras(
                     resumen_categoria,
                     x="Recurrencia",
-                    y="Total TAG-Mes",
-                    titulo="Clasificación general de recurrencias"
+                    y="Total TAG",
+                    titulo="Clasificación general de recurrencias del período"
                 ),
                 use_container_width=True,
             )
+
     with c22:
         if resumen_mes.empty:
             st.info("No hay resumen mensual para mostrar.")
         else:
-            base_mes_simple = resumen_mes[["Mes", "2 veces", "3 veces", "4 o más"]].copy()
+            base_mes_simple = resumen_mes[["Mes", "MesN", "2 veces", "3 veces", "4 o más"]].copy()
             base_mes_simple["Total recurrencias >1"] = base_mes_simple[["2 veces", "3 veces", "4 o más"]].sum(axis=1)
             st.plotly_chart(
                 grafico_barras(
                     base_mes_simple,
                     x="Mes",
                     y="Total recurrencias >1",
-                    titulo="Meses con más TAG repetidos"
+                    titulo="Meses con más TAG repetidos",
+                    orden_meses=orden_meses_graf
                 ),
                 use_container_width=True,
             )
 
-    if recurrencias.empty:
-        st.info("No hay detalle de recurrencias para el período seleccionado.")
+    st.markdown("#### Detalle mensual")
+    if recurrencias_mensuales.empty:
+        st.info("No hay detalle de recurrencias mensuales para el período seleccionado.")
     else:
         rec_mostrar = renombrar_columnas(
-            recurrencias,
+            recurrencias_mensuales,
             {
                 col_tag: "FinalTAG",
                 "CantidadMantenciones": "Cantidad",
@@ -574,6 +652,27 @@ with tab2:
         )
         columnas_rec = ["FinalTAG", "AñoMes", "Mes", "Cantidad", "Recurrencia", "Primera Fecha", "Última Fecha"]
         st.dataframe(seleccionar_columnas_seguras(rec_mostrar, columnas_rec), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Detalle del período completo")
+    if recurrencias_periodo.empty:
+        st.info("No hay detalle de recurrencias históricas para el período seleccionado.")
+    else:
+        rec_periodo_mostrar = renombrar_columnas(
+            recurrencias_periodo,
+            {
+                col_tag: "FinalTAG",
+                "CantidadMantenciones": "Cantidad",
+                "PrimeraFecha": "Primera Fecha",
+                "UltimaFecha": "Última Fecha",
+                "DiasEntrePrimeraYUltima": "Días entre primera y última",
+            }
+        )
+        columnas_rec_periodo = ["FinalTAG", "Cantidad", "Recurrencia", "Primera Fecha", "Última Fecha", "Días entre primera y última"]
+        st.dataframe(
+            seleccionar_columnas_seguras(rec_periodo_mostrar, columnas_rec_periodo),
+            use_container_width=True,
+            hide_index=True
+        )
 
 with tab3:
     st.markdown(f"### Registros descartados por menos de {umbral_dias} días")
@@ -585,8 +684,11 @@ with tab3:
     if descartados.empty:
         st.success(f"No se detectaron descartes por la regla de {umbral_dias} días.")
     else:
-        resumen_desc = descartados.groupby("Mes", as_index=False).agg(TotalDescartados=(col_tag, "size"))
-        resumen_desc["OrdenOperacional"] = resumen_desc["Mes"].map({MAPA_MESES[m]: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
+        resumen_desc = (
+            descartados.groupby(["Mes", "MesN"], as_index=False)
+            .agg(TotalDescartados=(col_tag, "size"))
+        )
+        resumen_desc["OrdenOperacional"] = resumen_desc["MesN"].map({m: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
         resumen_desc = resumen_desc.sort_values("OrdenOperacional").drop(columns="OrdenOperacional")
 
         st.plotly_chart(
@@ -594,7 +696,8 @@ with tab3:
                 resumen_desc,
                 x="Mes",
                 y="TotalDescartados",
-                titulo=f"Descartes por mes operacional (< {umbral_dias} días)"
+                titulo=f"Descartes por mes operacional (< {umbral_dias} días)",
+                orden_meses=orden_meses_graf
             ),
             use_container_width=True,
         )
@@ -632,13 +735,21 @@ with tab4:
             else:
                 mayores_mes = tabla_mayores.copy()
                 mayores_mes["Mes"] = mayores_mes["Fecha"].dt.month.map(MAPA_MESES)
-                mayores_mes = mayores_mes.groupby("Mes", as_index=False).agg(TotalMayores=("FinalTAG", "size"))
-                mayores_mes["OrdenOperacional"] = mayores_mes["Mes"].map({MAPA_MESES[m]: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
+                mayores_mes["MesN"] = mayores_mes["Fecha"].dt.month
+                mayores_mes = mayores_mes.groupby(["Mes", "MesN"], as_index=False).agg(TotalMayores=("FinalTAG", "size"))
+                mayores_mes["OrdenOperacional"] = mayores_mes["MesN"].map({m: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
                 mayores_mes = mayores_mes.sort_values("OrdenOperacional").drop(columns="OrdenOperacional")
                 st.plotly_chart(
-                    grafico_barras(mayores_mes, x="Mes", y="TotalMayores", titulo="Eventos de mantenimiento mayor por mes"),
+                    grafico_barras(
+                        mayores_mes,
+                        x="Mes",
+                        y="TotalMayores",
+                        titulo="Eventos de mantenimiento mayor por mes",
+                        orden_meses=orden_meses_graf
+                    ),
                     use_container_width=True,
                 )
+
         with c42:
             st.plotly_chart(
                 grafico_barras(
@@ -656,7 +767,8 @@ with tab4:
                 resumen_reing_mes,
                 x="Mes",
                 ys=["Reingresa como menor/otro", "Reingresa como mayor", "No reingresa"],
-                titulo="Mes en que reingresan los TAG después de un mayor"
+                titulo="Mes en que reingresan los TAG después de un mayor",
+                orden_meses=orden_meses_graf + ["Sin reingreso"]
             ),
             use_container_width=True,
         )
@@ -678,7 +790,8 @@ with tab4:
                     resumen_menor_mes,
                     x="MesReingreso",
                     y="TotalTAG",
-                    titulo="Cantidad de TAG que reingresan de mayor a menor/otro por mes"
+                    titulo="Cantidad de TAG que reingresan de mayor a menor/otro por mes",
+                    orden_meses=orden_meses_graf
                 ),
                 use_container_width=True,
             )
@@ -703,7 +816,8 @@ with tab5:
         "DatosFiltrados": filtrado,
         "Validos": validos,
         "DescartadosUmbral": descartados,
-        "RecurrenciasDetalle": recurrencias,
+        "RecurrenciasMensuales": recurrencias_mensuales,
+        "RecurrenciasPeriodo": recurrencias_periodo,
         "ResumenMensual": resumen_mes,
         "ResumenCategorias": resumen_categoria,
         "MayoresPeriodo": tabla_mayores,
@@ -721,8 +835,9 @@ with tab5:
         st.markdown(
             f"""
             - **Año operacional**: período entre abril de un año y marzo del siguiente.
-            - **Recurrencia**: cantidad de veces que un mismo FinalTAG aparece dentro del mismo mes.
-            - **2 veces / 3 veces / 4 o más**: cantidad de TAG-mes que tuvieron esa recurrencia.
+            - **Recurrencia mensual**: cantidad de veces que un mismo FinalTAG aparece dentro del mismo mes.
+            - **Recurrencia del período**: cantidad total de veces que un FinalTAG aparece en todo el período filtrado.
+            - **2 veces / 3 veces / 4 o más**: cantidad de TAG o TAG-mes que tuvieron esa recurrencia.
             - **Descartado < {umbral_dias} días**: evento del mismo FinalTAG cuya diferencia con el anterior es menor a {umbral_dias} días.
             - **Mantenimiento Mayor**: agrupación de Recuperación Mayor con cambio de Barra, Mayor, Mayor Cambio de barra y Mayor Cambio de cuerpo.
             - **Reingreso post mayor**: primer evento posterior al último mayor del TAG, aunque vuelva como menor.
@@ -742,8 +857,6 @@ with tab6:
         data = validos.sort_values([col_tag, col_fecha]).copy()
         data["FueMayorAntes"] = data.groupby(col_tag)["EsMayor"].shift(1).fillna(False)
         data["ReingresoMenor"] = (data["FueMayorAntes"] == True) & (data["EsMayor"] == False)
-
-        data["MesOrden"] = data["MesN"].map({m: i for i, m in enumerate(ORDEN_MESES_OPERACIONALES)})
 
         mayores_mes = data[data["EsMayor"]].groupby(["Mes", "MesN"], as_index=False).agg(Mayores=(col_tag, "size"))
         reingreso_mes = data[data["ReingresoMenor"]].groupby(["Mes", "MesN"], as_index=False).agg(Reingresos=(col_tag, "size"))
@@ -778,7 +891,8 @@ with tab6:
                 color="Tipo",
                 barmode="group",
                 text="Cantidad",
-                title="Mantenciones Mayores vs Reingresos como Menor"
+                title="Mantenciones Mayores vs Reingresos como Menor",
+                category_orders={"Mes": orden_meses_graf}
             )
             fig.update_traces(textposition="outside")
             fig.update_layout(
