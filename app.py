@@ -426,7 +426,7 @@ def descargar_excel(df_dict: dict[str, pd.DataFrame]) -> bytes:
 # ============================================================
 # INTERFAZ
 # ============================================================
-st.title("📊 Analizador Web de Mantenciones por FinalTAG")
+st.title("📊 Analizador Web de Mantenciones")
 st.caption(
     "Análisis usando la columna Fecha_Ingreso, período operacional abril-marzo, "
     "recurrencias mensuales, recurrencia histórica del período, descartes configurables y seguimiento post mantenimiento mayor."
