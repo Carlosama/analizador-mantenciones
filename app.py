@@ -662,7 +662,7 @@ def render_tabla_descargable(
 # ============================================================
 # HEADER
 # ============================================================
-st.markdown('<div class="main-title">⛏️ Dashboard de Mantenciones Minería 4.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">⛏️ Dashboard de Mantenciones Trazabilidad</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-title">Lógica corregida: Mayores fijos, regla de 9 días solo para menores y exclusión de menores demasiado cercanos a un Mayor.</div>',
     unsafe_allow_html=True
