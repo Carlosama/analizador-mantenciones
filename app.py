@@ -274,11 +274,6 @@ def filtrar_por_rango(df: pd.DataFrame, col_fecha: str, fecha_inicio: pd.Timesta
 
 
 def aplicar_regla_menores(df_menores: pd.DataFrame, col_fecha: str, col_tag: str, umbral_dias: int):
-    """
-    Regla de días SOLO para menores.
-    Compara cada mantención menor con la mantención menor anterior del mismo TAG.
-    Los mayores NO participan en esta lógica.
-    """
     if df_menores.empty:
         vacio = df_menores.copy()
         vacio["FechaAnteriorMenor"] = pd.NaT
@@ -297,10 +292,6 @@ def aplicar_regla_menores(df_menores: pd.DataFrame, col_fecha: str, col_tag: str
 
 
 def aplicar_bloqueo_post_mayor(df: pd.DataFrame, col_fecha: str, col_tag: str, dias_bloqueo: int):
-    """
-    Bloquea mantenciones menores que ocurren demasiado pronto después
-    de un Mantenimiento Mayor del mismo TAG.
-    """
     if df.empty:
         vacio = df.copy()
         vacio["FechaUltimoMayorPrevio"] = pd.NaT
@@ -346,12 +337,6 @@ def construir_dataset_analitico(
     aplicar_filtro_post_mayor: bool = True,
     dias_bloqueo_post_mayor: int = 60
 ):
-    """
-    Lógica final:
-    1. Mayores siempre se mantienen.
-    2. Menores pasan por regla de 9 días.
-    3. Además, se eliminan menores que ocurren muy pronto después de un mayor.
-    """
     mayores = df[df["EsMayor"]].copy()
     menores = df[~df["EsMayor"]].copy()
 
@@ -603,6 +588,18 @@ def descargar_excel(dic_hojas: dict) -> bytes:
     return output.read()
 
 
+def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+
+
+def dataframe_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Datos") -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+    output.seek(0)
+    return output.read()
+
+
 def renombrar_columnas(df: pd.DataFrame, mapa: dict) -> pd.DataFrame:
     return df.rename(columns=mapa).copy()
 
@@ -620,6 +617,46 @@ def render_kpi(label, value, note=""):
         <div class="kpi-note">{note}</div>
     </div>
     """, unsafe_allow_html=True)
+
+
+def render_tabla_descargable(
+    titulo: str,
+    df: pd.DataFrame,
+    nombre_base: str,
+    mostrar_excel: bool = True,
+    altura: int = 420
+):
+    st.markdown(f"#### {titulo}")
+
+    if df is None or df.empty:
+        st.info("No hay datos para mostrar o descargar.")
+        return
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.download_button(
+            label="⬇️ Descargar CSV",
+            data=dataframe_to_csv_bytes(df),
+            file_name=f"{nombre_base}.csv",
+            mime="text/csv",
+            key=f"csv_{nombre_base}"
+        )
+
+    with c2:
+        if mostrar_excel:
+            try:
+                st.download_button(
+                    label="⬇️ Descargar Excel",
+                    data=dataframe_to_excel_bytes(df, sheet_name=nombre_base[:31]),
+                    file_name=f"{nombre_base}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"xlsx_{nombre_base}"
+                )
+            except Exception as e:
+                st.warning(f"No se pudo generar Excel para esta tabla: {e}")
+
+    st.dataframe(df, use_container_width=True, hide_index=True, height=altura)
 
 
 # ============================================================
@@ -765,7 +802,6 @@ with st.container():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-
 if datos_rango.empty:
     st.warning("No hay registros dentro del rango seleccionado.")
     st.stop()
@@ -904,8 +940,11 @@ with tab1:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### Resumen mensual de recurrencias")
-    st.dataframe(resumen_mes, use_container_width=True, hide_index=True)
+    render_tabla_descargable(
+        "Resumen mensual de recurrencias",
+        resumen_mes,
+        "resumen_mensual_recurrencias"
+    )
 
 with tab2:
     st.markdown('<div class="section-title">Recurrencias por FinalTAG</div>', unsafe_allow_html=True)
@@ -941,7 +980,6 @@ with tab2:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### Detalle mensual")
     if recurrencias_mensuales.empty:
         st.info("No hay detalle mensual con la recurrencia seleccionada.")
     else:
@@ -955,9 +993,14 @@ with tab2:
             }
         )
         columnas_rec = ["FinalTAG", "AñoMes", "Mes", "Cantidad", "Recurrencia", "Primera Fecha", "Última Fecha"]
-        st.dataframe(seleccionar_columnas_seguras(rec_mostrar, columnas_rec), use_container_width=True, hide_index=True)
+        df_rec_detalle = seleccionar_columnas_seguras(rec_mostrar, columnas_rec)
 
-    st.markdown("#### Detalle del período")
+        render_tabla_descargable(
+            "Detalle mensual",
+            df_rec_detalle,
+            "detalle_mensual_recurrencias"
+        )
+
     if recurrencias_periodo.empty:
         st.info("No hay detalle del período con la recurrencia seleccionada.")
     else:
@@ -972,7 +1015,13 @@ with tab2:
             }
         )
         columnas_rec_periodo = ["FinalTAG", "Cantidad", "Recurrencia", "Primera Fecha", "Última Fecha", "Días entre primera y última"]
-        st.dataframe(seleccionar_columnas_seguras(rec_periodo_mostrar, columnas_rec_periodo), use_container_width=True, hide_index=True)
+        df_rec_periodo = seleccionar_columnas_seguras(rec_periodo_mostrar, columnas_rec_periodo)
+
+        render_tabla_descargable(
+            "Detalle del período",
+            df_rec_periodo,
+            "detalle_periodo_recurrencias"
+        )
 
 with tab3:
     st.markdown(f'<div class="section-title">Menores descartados por regla de {umbral_dias} días</div>', unsafe_allow_html=True)
@@ -1016,7 +1065,13 @@ with tab3:
             "FinalTAG", "Fecha", "Fecha Menor Anterior", "Días desde menor anterior",
             "EstadoOriginal", "TipoAgrupado", "AñoMes"
         ]
-        st.dataframe(seleccionar_columnas_seguras(desc_mostrar, columnas_desc), use_container_width=True, hide_index=True)
+        df_desc = seleccionar_columnas_seguras(desc_mostrar, columnas_desc)
+
+        render_tabla_descargable(
+            "Detalle de menores descartados",
+            df_desc,
+            "menores_descartados_regla_dias"
+        )
 
 with tab4:
     st.markdown(
@@ -1071,10 +1126,12 @@ with tab4:
             "AñoMes"
         ]
 
-        st.dataframe(
-            seleccionar_columnas_seguras(post_mostrar, columnas_post),
-            use_container_width=True,
-            hide_index=True
+        df_post = seleccionar_columnas_seguras(post_mostrar, columnas_post)
+
+        render_tabla_descargable(
+            "Detalle de excluidos post-mayor",
+            df_post,
+            "excluidos_post_mayor"
         )
 
 with tab5:
@@ -1112,12 +1169,18 @@ with tab5:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("#### Detalle de eventos mayores")
-    st.dataframe(tabla_mayores, use_container_width=True, hide_index=True)
+    render_tabla_descargable(
+        "Detalle de eventos mayores",
+        tabla_mayores,
+        "detalle_eventos_mayores"
+    )
 
     if not post_mayor.empty:
-        st.markdown("#### Detalle de historial post mayor")
-        st.dataframe(post_mayor, use_container_width=True, hide_index=True)
+        render_tabla_descargable(
+            "Detalle de historial post mayor",
+            post_mayor,
+            "historial_post_mayor"
+        )
 
 with tab6:
     st.markdown('<div class="section-title">Mayor vs Reingreso como menor</div>', unsafe_allow_html=True)
@@ -1192,7 +1255,14 @@ with tab6:
             tabla_mostrar = tabla.copy()
             tabla_mostrar["Mayores"] = tabla_mostrar["Mayores"].astype(int)
             tabla_mostrar["Reingresos"] = tabla_mostrar["Reingresos"].astype(int)
-            st.dataframe(tabla_mostrar[["Mes", "Mayores", "Reingresos"]], use_container_width=True, hide_index=True)
+
+            df_mayor_vs = tabla_mostrar[["Mes", "Mayores", "Reingresos"]].copy()
+
+            render_tabla_descargable(
+                "Detalle Mayor vs Reingresos",
+                df_mayor_vs,
+                "mayor_vs_reingresos"
+            )
 
             if tasa_reingreso > 40:
                 st.markdown(
@@ -1217,27 +1287,37 @@ with tab7:
         unsafe_allow_html=True
     )
 
-    paquete_excel = descargar_excel({
-        "DatosFiltrados": filtrado,
-        "Mayores": mayores,
-        "Menores": menores,
-        "MenoresValidos": menores_validos,
-        "MenoresDescartados": menores_descartados,
-        "ExcluidosPostMayor": menores_excluidos_post_mayor,
-        "ValidosFinales": validos,
-        "RecMensuales": recurrencias_mensuales,
-        "RecPeriodo": recurrencias_periodo,
-        "ResumenMensual": resumen_mes,
-        "ResumenCategorias": resumen_categoria,
-        "MayoresPeriodo": tabla_mayores,
-        "PostMayor": post_mayor,
-    })
+    try:
+        paquete_excel = descargar_excel({
+            "DatosFiltrados": filtrado,
+            "Mayores": mayores,
+            "Menores": menores,
+            "MenoresValidos": menores_validos,
+            "MenoresDescartados": menores_descartados,
+            "ExcluidosPostMayor": menores_excluidos_post_mayor,
+            "ValidosFinales": validos,
+            "RecMensuales": recurrencias_mensuales,
+            "RecPeriodo": recurrencias_periodo,
+            "ResumenMensual": resumen_mes,
+            "ResumenCategorias": resumen_categoria,
+            "MayoresPeriodo": tabla_mayores,
+            "PostMayor": post_mayor,
+        })
 
-    st.download_button(
-        label="📥 Descargar resultados en Excel",
-        data=paquete_excel,
-        file_name=f"analisis_mantenciones_mineria40_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        st.download_button(
+            label="📥 Descargar resultados en Excel",
+            data=paquete_excel,
+            file_name=f"analisis_mantenciones_mineria40_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+        st.error(f"No se pudo generar el Excel general: {e}")
+
+    render_tabla_descargable(
+        "Datos filtrados finales",
+        validos,
+        "datos_filtrados_finales",
+        altura=500
     )
 
     with st.expander("Ver glosario y reglas del modelo"):
